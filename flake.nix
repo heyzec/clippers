@@ -6,25 +6,21 @@
     nixpkgs,
     ...
   }: let
-    pkgsFor = system:
-      import nixpkgs {inherit system;};
-
     targetSystems = ["x86_64-linux" "aarch64-darwin"];
+    rev = self.shortRev or self.dirtyShortRev or "dirty";
   in {
-    devShells = nixpkgs.lib.genAttrs targetSystems (system: let
-      pkgs = pkgsFor system;
-    in {
-      default = pkgs.mkShell {
-        nativeBuildInputs = with pkgs; [
-          # Compilers
-          rustc
-          cargo
-
-          # Tools
-          rust-analyzer
-          rustfmt
-        ];
+    devShells = nixpkgs.lib.genAttrs targetSystems (system: {
+      default = import ./shell.nix {
+        pkgs = nixpkgs.legacyPackages.${system};
       };
     });
+
+    packages = nixpkgs.lib.genAttrs targetSystems (
+      system: {
+        default = nixpkgs.legacyPackages.${system}.callPackage ./package.nix {
+          inherit rev;
+        };
+      }
+    );
   };
 }
