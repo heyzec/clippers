@@ -1,4 +1,5 @@
 mod commands;
+mod r#impl;
 
 use clap::{Parser, Subcommand};
 
@@ -13,6 +14,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Watch,
+    List,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,8 +24,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Watch => {
             commands::watch::execute()?;
         }
+        Commands::List => {
+            commands::list::execute()?;
+        }
     }
 
     Ok(())
 }
-
