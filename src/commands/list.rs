@@ -6,7 +6,7 @@ pub fn execute() -> Result<(), Box<dyn std::error::Error>> {
 
     for entry in entries.iter() {
         // TODO: Configure separator from command line argument
-        print!("{}\x01", entry.content);
+        print!("{}:::", entry.content);
     }
 
     Ok(())
