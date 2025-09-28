@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipboardEntry {
     pub id: u64,
-    pub content: String,
     pub timestamp: std::time::SystemTime,
+    pub types: HashMap<String, String>, // mime_type -> content
 }
 
 #[derive(Serialize, Deserialize)]
@@ -42,12 +42,12 @@ impl Storage {
         Ok(storage)
     }
 
-    pub fn add_entry(&mut self, content: String) {
+    pub fn add_entry(&mut self, types: HashMap<String, String>) {
         self.highest_id += 1;
         let entry = ClipboardEntry {
             id: self.highest_id,
-            content,
             timestamp: std::time::SystemTime::now(),
+            types,
         };
 
         self.entries.push_front(entry);
@@ -83,5 +83,43 @@ impl Storage {
         serde_json::to_writer_pretty(file, &self)?;
 
         Ok(())
+    }
+}
+
+impl ClipboardEntry {
+    /// Create a new ClipboardEntry with multiple MIME types
+    pub fn new(id: u64, types: HashMap<String, String>) -> Self {
+        Self {
+            id,
+            timestamp: std::time::SystemTime::now(),
+            types,
+        }
+    }
+
+    /// Create a simple text-only entry for backward compatibility
+    pub fn from_text(id: u64, content: String) -> Self {
+        let mut types = HashMap::new();
+        types.insert("public.utf8-plain-text".to_string(), content);
+        
+        Self {
+            id,
+            timestamp: std::time::SystemTime::now(),
+            types,
+        }
+    }
+
+    /// Get content for a specific MIME type
+    pub fn get_content_by_type(&self, mime_type: &str) -> Option<&String> {
+        self.types.get(mime_type)
+    }
+
+    /// Get text content (convenience method for plain text)
+    pub fn get_text_content(&self) -> Option<&String> {
+        self.types.get("public.utf8-plain-text")
+    }
+
+    /// Get all available MIME types
+    pub fn get_available_types(&self) -> Vec<&String> {
+        self.types.keys().collect()
     }
 }
