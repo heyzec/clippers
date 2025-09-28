@@ -4,12 +4,16 @@ use std::fs::File;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipboardEntry {
+    pub id: u64,
     pub content: String,
     pub timestamp: std::time::SystemTime,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Storage {
     entries: VecDeque<ClipboardEntry>,
+    highest_id: u64,
+    #[serde(skip)]
     max_entries: usize,
 }
 
@@ -18,6 +22,7 @@ impl Storage {
         Self {
             entries: VecDeque::new(),
             max_entries,
+            highest_id: 0,
         }
     }
 
@@ -26,10 +31,9 @@ impl Storage {
         let file_path = format!("{}/db.json", home_dir);
 
         let file = File::open(file_path)?;
-        let entries: VecDeque<ClipboardEntry> = serde_json::from_reader(file)?;
-
-        let mut storage = Self::new(max_entries);
-        storage.entries = entries;
+        let mut storage: Storage = serde_json::from_reader(file)?;
+        
+        storage.max_entries = max_entries;
 
         // while storage.entries.len() > storage.max_entries {
         //     storage.entries.pop_back();
@@ -39,7 +43,9 @@ impl Storage {
     }
 
     pub fn add_entry(&mut self, content: String) {
+        self.highest_id += 1;
         let entry = ClipboardEntry {
+            id: self.highest_id,
             content,
             timestamp: std::time::SystemTime::now(),
         };
@@ -52,6 +58,11 @@ impl Storage {
         }
 
         let _ = self.to_file();
+    }
+
+    pub fn get_entry_by_id(&self, id: u64) -> Option<&ClipboardEntry> {
+        // TODO: Consider using a hash map for faster lookup
+        self.entries.iter().find(|entry| entry.id == id)
     }
 
     #[allow(dead_code)]
@@ -69,7 +80,7 @@ impl Storage {
         let file_path = format!("{}/db.json", home_dir);
         let file = File::create(file_path)?;
 
-        serde_json::to_writer_pretty(file, &self.entries)?;
+        serde_json::to_writer_pretty(file, &self)?;
 
         Ok(())
     }
