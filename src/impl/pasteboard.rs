@@ -44,6 +44,26 @@ impl NSPasteboard {
         self.get_by_type("public.utf8-plain-text").ok()
     }
 
+    pub fn set_by_type(&self, content_type: &str, content: &str) -> Result<(), Box<dyn std::error::Error>> {
+        unsafe {
+            // Clear the pasteboard first
+            let _: i32 = msg_send![self.pasteboard, clearContents];
+            
+            // Create NSString objects for the type and content
+            let string_type: id = NSString::alloc(nil).init_str(content_type);
+            let string_content: id = NSString::alloc(nil).init_str(content);
+            
+            // Set the string for the specified type
+            let success: bool = msg_send![self.pasteboard, setString:string_content forType:string_type];
+            
+            if success {
+                Ok(())
+            } else {
+                Err(format!("Failed to set clipboard content for type: {}", content_type).into())
+            }
+        }
+    }
+
     pub fn list_types(&self) -> Vec<String> {
         unsafe {
             let types_array: *mut Object = msg_send![self.pasteboard, types];
