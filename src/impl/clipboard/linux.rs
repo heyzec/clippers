@@ -1,3 +1,6 @@
+#![cfg(target_os = "linux")]
+
+use super::Clipboard;
 use std::collections::HashMap;
 use wayland_client::{
     backend::ObjectId,
@@ -16,6 +19,8 @@ struct AppState {
     data_control_manager: Option<ZwlrDataControlManagerV1>,
     data_control_device: Option<ZwlrDataControlDeviceV1>,
     offer_mime_types: HashMap<ObjectId, Vec<String>>,
+    got_selection: bool,
+    current_selection: Option<ZwlrDataControlOfferV1>,
 }
 
 impl Dispatch<WlRegistry, ()> for AppState {
@@ -87,6 +92,8 @@ impl wayland_client::Dispatch<ZwlrDataControlDeviceV1, (), AppState> for AppStat
                         println!("📋 {}", mime_type);
                     }
                 }
+                state.current_selection = Some(offer);
+                state.got_selection = true;
             }
             DataControlDeviceEvent::PrimarySelection { id } => {
                 if let Some(offer) = id {
@@ -136,48 +143,139 @@ impl Dispatch<ZwlrDataControlOfferV1, ()> for AppState {
     }
 }
 
-pub fn execute() -> Result<(), Box<dyn std::error::Error>> {
-    let conn = Connection::connect_to_env()?;
-    let display = conn.display();
+/// Linux implementation of the Clipboard trait using Wayland
+pub struct LinuxClipboard {
+    conn: Connection,
+    state: AppState,
+    event_queue: wayland_client::EventQueue<AppState>,
+}
 
-    // Create an event queue for our event processing
-    let mut event_queue = conn.new_event_queue();
-    let qh = event_queue.handle();
+impl std::panic::RefUnwindSafe for LinuxClipboard {}
 
-    // Create a wl_registry object by sending the wl_display.get_registry request
-    let _registry = display.get_registry(&qh, ());
+impl LinuxClipboard {
+    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        let conn = Connection::connect_to_env()?;
+        let display = conn.display();
 
-    let mut state = AppState {
-        data_control_manager: None,
-        seat: None,
-        data_control_device: None,
-        offer_mime_types: HashMap::new(),
-    };
-    event_queue.blocking_dispatch(&mut state)?;
+        // Create an event queue for our event processing
+        let mut event_queue = conn.new_event_queue();
+        let qh = event_queue.handle();
 
-    if state.data_control_manager.is_none() || state.seat.is_none() {
-        return Err("Missing zwlr_data_control_manager_v1 or wl_seat".into());
+        // Create a wl_registry object by sending the wl_display.get_registry request
+        let _registry = display.get_registry(&qh, ());
+
+        let mut state = AppState {
+            data_control_manager: None,
+            seat: None,
+            data_control_device: None,
+            offer_mime_types: HashMap::new(),
+            got_selection: false,
+            current_selection: None,
+        };
+        event_queue.blocking_dispatch(&mut state)?;
+
+        if state.data_control_manager.is_none() || state.seat.is_none() {
+            return Err("Missing zwlr_data_control_manager_v1 or wl_seat".into());
+        }
+
+        let data_control_manager = state.data_control_manager.as_ref().unwrap();
+        let seat = state.seat.as_ref().unwrap();
+
+        let data_control_device = data_control_manager.get_data_device(seat, &qh, ());
+        state.data_control_device = Some(data_control_device);
+
+        Ok(LinuxClipboard {
+            conn,
+            state,
+            event_queue,
+        })
+    }
+}
+
+impl Clipboard for LinuxClipboard {
+    fn get_change_count(&self) -> i32 {
+        // For now, return a dummy value that changes each time
+        // TODO: Implement proper change detection using Wayland events
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i32
     }
 
-    let data_control_manager = state.data_control_manager.as_ref().unwrap();
-    let seat = state.seat.as_ref().unwrap();
+    fn get_by_type(&mut self, content_type: &str) -> Result<String, Box<dyn std::error::Error>> {
+        use nix::fcntl::OFlag;
+        use nix::unistd::{pipe2, read};
+        use std::os::fd::{AsRawFd, BorrowedFd};
 
-    let data_control_device = data_control_manager.get_data_device(seat, &qh, ());
-    state.data_control_device = Some(data_control_device);
+        // Get the current selection offer from state
+        let offer = match &self.state.current_selection {
+            Some(offer) => offer,
+            None => return Err("No selection available".into()),
+        };
 
-    println!("Listening for clipboard events forever...");
+        // Create a pipe to receive the data
+        let (read_fd, write_fd) = pipe2(OFlag::O_CLOEXEC)?;
 
-    loop {
-        match event_queue.blocking_dispatch(&mut state) {
-            Ok(_) => {
-                // Continue processing events
-            }
-            Err(e) => {
-                eprintln!("Error processing events: {}", e);
-                break;
+        // Request the data to be written to our pipe
+        // Convert content_type to String and get BorrowedFd
+        let content_type = content_type.to_string();
+        let write_fd = unsafe { BorrowedFd::borrow_raw(write_fd.as_raw_fd()) };
+        offer.receive(content_type, write_fd);
+
+        // Close write end so read() will return when done
+        use nix::unistd::close;
+        close(write_fd.as_raw_fd())?;
+
+        // Dispatch Wayland events to get the data flowing
+        println!("📋 Dispatching events to get data...");
+        self.event_queue.blocking_dispatch(&mut self.state)?;
+
+        // Read the data from the pipe
+        use std::os::fd::FromRawFd;
+        use std::io::Read;
+        
+        // Convert raw fd to File and read all at once
+        let mut file = unsafe { std::fs::File::from_raw_fd(read_fd) };
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+
+        // Convert bytes to string
+        let result = String::from_utf8(buffer).map_err(|e| format!("Invalid UTF-8 in clipboard: {}", e).into());
+        if let Ok(ref s) = result {
+            println!("📋 Got clipboard text: {:?}", s);
+        }
+        result
+    }
+
+    fn get_string(&mut self) -> Option<String> {
+        self.get_by_type("text/plain").ok()
+    }
+
+    fn set_by_type(&self, _content_type: &str, _content: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // TODO: Implement clipboard content setting using Wayland
+        Err("LinuxClipboard::set_by_type not yet implemented".into())
+    }
+
+    fn set_multiple_types(&self, _types: &HashMap<String, String>) -> Result<(), Box<dyn std::error::Error>> {
+        // TODO: Implement multiple type setting using Wayland
+        Err("LinuxClipboard::set_multiple_types not yet implemented".into())
+    }
+
+    fn list_types(&self) -> Vec<String> {
+        // TODO: Implement MIME type listing using Wayland
+        Vec::new()
+    }
+
+    fn wait(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.state.got_selection = false;
+
+        loop {
+            self.event_queue.blocking_dispatch(&mut self.state)
+                .map_err(|e| format!("Error waiting for clipboard events: {}", e))?;
+            
+            if self.state.got_selection {
+                return Ok(());
             }
         }
     }
-
-    Ok(())
 }
