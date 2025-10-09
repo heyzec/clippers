@@ -6,8 +6,6 @@ use cocoa::foundation::NSString;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
 use super::Clipboard;
-use std::collections::HashMap;
-
 pub struct NSPasteboard {
     pasteboard: *mut Object,
 }
@@ -21,13 +19,13 @@ impl NSPasteboard {
             Ok(NSPasteboard { pasteboard })
         }
     }
-}
 
-impl Clipboard for NSPasteboard {
     fn get_change_count(&self) -> i32 {
         unsafe { msg_send![self.pasteboard, changeCount] }
     }
-    
+}
+
+impl Clipboard for NSPasteboard {
     fn get_by_type(&mut self, content_type: &str) -> Result<String, Box<dyn std::error::Error>> {
         unsafe {
             let string_type: id = NSString::alloc(nil).init_str(content_type);
@@ -44,21 +42,11 @@ impl Clipboard for NSPasteboard {
                 .into_owned())
         }
     }
-    
+
     fn get_string(&mut self) -> Option<String> {
         self.get_by_type("public.utf8-plain-text").ok()
     }
-    
-    fn set_by_type(&self, _content_type: &str, _content: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // TODO: Implement clipboard content setting for macOS
-        Err("NSPasteboard::set_by_type not yet implemented".into())
-    }
-    
-    fn set_multiple_types(&self, _types: &HashMap<String, String>) -> Result<(), Box<dyn std::error::Error>> {
-        // TODO: Implement multiple type setting for macOS
-        Err("NSPasteboard::set_multiple_types not yet implemented".into())
-    }
-    
+
     fn list_types(&self) -> Vec<String> {
         unsafe {
             let types_array: *mut Object = msg_send![self.pasteboard, types];
@@ -88,11 +76,11 @@ impl Clipboard for NSPasteboard {
 
     fn wait(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let initial_change_count = self.get_change_count();
-        
+
         loop {
             std::thread::sleep(std::time::Duration::from_millis(500));
             let current_change_count = self.get_change_count();
-            
+
             if current_change_count != initial_change_count {
                 return Ok(());
             }

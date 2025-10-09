@@ -2,6 +2,10 @@
 
 use super::Clipboard;
 use std::collections::HashMap;
+use std::io::Read;
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd};
+use nix::fcntl::{pipe2, OFlag};
+use nix::unistd::close;
 use wayland_client::{
     backend::ObjectId,
     delegate_noop,
@@ -18,6 +22,7 @@ struct AppState {
     seat: Option<WlSeat>,
     data_control_manager: Option<ZwlrDataControlManagerV1>,
     data_control_device: Option<ZwlrDataControlDeviceV1>,
+
     offer_mime_types: HashMap<ObjectId, Vec<String>>,
     got_selection: bool,
     current_selection: Option<ZwlrDataControlOfferV1>,
@@ -193,57 +198,35 @@ impl LinuxClipboard {
 }
 
 impl Clipboard for LinuxClipboard {
-    fn get_change_count(&self) -> i32 {
-        // For now, return a dummy value that changes each time
-        // TODO: Implement proper change detection using Wayland events
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i32
-    }
-
     fn get_by_type(&mut self, content_type: &str) -> Result<String, Box<dyn std::error::Error>> {
         use nix::fcntl::OFlag;
         use nix::unistd::{pipe2, read};
         use std::os::fd::{AsRawFd, BorrowedFd};
 
-        // Get the current selection offer from state
         let offer = match &self.state.current_selection {
             Some(offer) => offer,
             None => return Err("No selection available".into()),
         };
 
-        // Create a pipe to receive the data
         let (read_fd, write_fd) = pipe2(OFlag::O_CLOEXEC)?;
 
-        // Request the data to be written to our pipe
-        // Convert content_type to String and get BorrowedFd
         let content_type = content_type.to_string();
         let write_fd = unsafe { BorrowedFd::borrow_raw(write_fd.as_raw_fd()) };
         offer.receive(content_type, write_fd);
 
-        // Close write end so read() will return when done
         use nix::unistd::close;
         close(write_fd.as_raw_fd())?;
 
-        // Dispatch Wayland events to get the data flowing
-        println!("📋 Dispatching events to get data...");
         self.event_queue.blocking_dispatch(&mut self.state)?;
 
-        // Read the data from the pipe
         use std::os::fd::FromRawFd;
         use std::io::Read;
-        
-        // Convert raw fd to File and read all at once
+
         let mut file = unsafe { std::fs::File::from_raw_fd(read_fd) };
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?;
 
-        // Convert bytes to string
         let result = String::from_utf8(buffer).map_err(|e| format!("Invalid UTF-8 in clipboard: {}", e).into());
-        if let Ok(ref s) = result {
-            println!("📋 Got clipboard text: {:?}", s);
-        }
         result
     }
 
@@ -251,18 +234,13 @@ impl Clipboard for LinuxClipboard {
         self.get_by_type("text/plain").ok()
     }
 
-    fn set_by_type(&self, _content_type: &str, _content: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // TODO: Implement clipboard content setting using Wayland
-        Err("LinuxClipboard::set_by_type not yet implemented".into())
-    }
-
-    fn set_multiple_types(&self, _types: &HashMap<String, String>) -> Result<(), Box<dyn std::error::Error>> {
-        // TODO: Implement multiple type setting using Wayland
-        Err("LinuxClipboard::set_multiple_types not yet implemented".into())
-    }
-
     fn list_types(&self) -> Vec<String> {
-        // TODO: Implement MIME type listing using Wayland
+        if let Some(ref current_selection) = self.state.current_selection {
+            let selection_id = current_selection.id();
+            if let Some(mime_types) = self.state.offer_mime_types.get(&selection_id) {
+                return mime_types.clone();
+            }
+        }
         Vec::new()
     }
 
@@ -272,7 +250,7 @@ impl Clipboard for LinuxClipboard {
         loop {
             self.event_queue.blocking_dispatch(&mut self.state)
                 .map_err(|e| format!("Error waiting for clipboard events: {}", e))?;
-            
+
             if self.state.got_selection {
                 return Ok(());
             }

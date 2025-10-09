@@ -23,11 +23,11 @@ pub fn execute() -> Result<(), Box<dyn std::error::Error>> {
                 e
             })?;
             
-            print!("Changed: ");
             let new_content = clipboard.get_string().ok_or("Failed to get clipboard content")?;
-            print!("{}", new_content);
+            println!();
+            println!("Changed: {}", new_content);
             let types = clipboard.list_types();
-            println!("HEHE: {:?}", types);
+            println!("Types: {:?}", types);
             storage.add_entry(new_content);
         }
     }
