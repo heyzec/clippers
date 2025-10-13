@@ -24,18 +24,21 @@ pub fn execute() -> Result<(), Box<dyn std::error::Error>> {
                 e
             })?;
 
-            let new_content = clipboard
-                .get_string()
-                .ok_or("Failed to get clipboard content")?;
-            println!();
-            println!("Changed: {}", new_content);
+            // let new_content = clipboard
+            //     .get_string()
+            //     .ok_or("Failed to get clipboard content???")?;
+            // println!();
+            // println!("Changed: {}", new_content);
             let types = clipboard.list_types();
             println!("Types: {:?}", types);
 
             for content_type in &types {
                 match clipboard.get_by_type(content_type) {
                     Ok(content) => {
-                        println!("Type '{}': {}", content_type, content);
+                        // Try to display as UTF-8 string, otherwise show byte length
+                        let display = String::from_utf8(content.clone())
+                            .unwrap_or_else(|_| format!("<binary data, {} bytes>", content.len()));
+                        println!("Type '{}': {}", content_type, display);
                     }
                     Err(e) => {
                         println!("Type '{}': Failed to get content - {}", content_type, e);
@@ -49,6 +52,7 @@ pub fn execute() -> Result<(), Box<dyn std::error::Error>> {
                 let content = clipboard
                     .get_by_type(content_type)
                     .expect("Failed to get content");
+                // Store as bytes directly
                 type_content_map.insert(content_type.clone(), content);
             }
 

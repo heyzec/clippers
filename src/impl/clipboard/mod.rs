@@ -1,6 +1,6 @@
 /// Common interface for clipboard operations across different platforms
 pub trait Clipboard: std::panic::RefUnwindSafe {
-    fn get_by_type(&mut self, content_type: &str) -> Result<String, Box<dyn std::error::Error>>;
+    fn get_by_type(&mut self, content_type: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>>;
 
     fn get_string(&mut self) -> Option<String>;
 
@@ -10,9 +10,9 @@ pub trait Clipboard: std::panic::RefUnwindSafe {
     fn wait(&mut self) -> Result<(), Box<dyn std::error::Error>>;
 
     #[allow(dead_code)]
-    fn set_by_type(&self, content_type: &str, content: &str) -> Result<(), Box<dyn std::error::Error>>;
+    fn set_by_type(&self, content_type: &str, content: &[u8]) -> Result<(), Box<dyn std::error::Error>>;
 
-    fn set_multiple_types(&self, types: &std::collections::HashMap<String, String>) -> Result<(), Box<dyn std::error::Error>>;
+    fn set_multiple_types(&self, types: &std::collections::HashMap<String, Vec<u8>>) -> Result<(), Box<dyn std::error::Error>>;
 }
 
 pub fn create_clipboard() -> Result<Box<dyn Clipboard>, Box<dyn std::error::Error>> {

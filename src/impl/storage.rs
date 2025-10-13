@@ -6,7 +6,46 @@ use std::fs::File;
 pub struct ClipboardEntry {
     pub id: u64,
     pub timestamp: std::time::SystemTime,
-    pub types: HashMap<String, String>, // mime_type -> content
+    #[serde(with = "serde_bytes_map")]
+    pub types: HashMap<String, Vec<u8>>, // mime_type -> content (bytes)
+}
+
+// Custom serialization for HashMap<String, Vec<u8>> to use base64
+mod serde_bytes_map {
+    use base64::{Engine as _, engine::general_purpose};
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::collections::HashMap;
+
+    pub fn serialize<S>(
+        map: &HashMap<String, Vec<u8>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map_ser = serializer.serialize_map(Some(map.len()))?;
+        for (k, v) in map {
+            let encoded = general_purpose::STANDARD.encode(v);
+            map_ser.serialize_entry(k, &encoded)?;
+        }
+        map_ser.end()
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<String, Vec<u8>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let map: HashMap<String, String> = HashMap::deserialize(deserializer)?;
+        map.into_iter()
+            .map(|(k, v)| {
+                general_purpose::STANDARD
+                    .decode(&v)
+                    .map(|bytes| (k, bytes))
+                    .map_err(serde::de::Error::custom)
+            })
+            .collect()
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -42,7 +81,7 @@ impl Storage {
         Ok(storage)
     }
 
-    pub fn add_entry(&mut self, types: HashMap<String, String>) {
+    pub fn add_entry(&mut self, types: HashMap<String, Vec<u8>>) {
         self.highest_id += 1;
         let entry = ClipboardEntry::new(self.highest_id, types);
 
@@ -83,7 +122,7 @@ impl Storage {
 }
 
 impl ClipboardEntry {
-    pub fn new(id: u64, types: HashMap<String, String>) -> Self {
+    pub fn new(id: u64, types: HashMap<String, Vec<u8>>) -> Self {
         Self {
             id,
             timestamp: std::time::SystemTime::now(),
@@ -91,12 +130,13 @@ impl ClipboardEntry {
         }
     }
 
-    pub fn get_content_by_type(&self, mime_type: &str) -> Option<&String> {
+    pub fn get_content_by_type(&self, mime_type: &str) -> Option<&Vec<u8>> {
         self.types.get(mime_type)
     }
 
-    pub fn get_text_content(&self) -> Option<&String> {
+    pub fn get_text_content(&self) -> Option<String> {
         self.get_content_by_type("public.utf8-plain-text")
+            .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
     }
 
     #[allow(dead_code)]
