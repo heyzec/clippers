@@ -1,4 +1,11 @@
+#![cfg(target_os = "linux")]
+
+use super::Clipboard;
 use std::collections::HashMap;
+use std::io::Read;
+use std::os::fd::{AsRawFd, BorrowedFd};
+use nix::fcntl::OFlag;
+use nix::unistd::pipe2;
 use wayland_client::{
     backend::ObjectId,
     delegate_noop,
@@ -15,7 +22,10 @@ struct AppState {
     seat: Option<WlSeat>,
     data_control_manager: Option<ZwlrDataControlManagerV1>,
     data_control_device: Option<ZwlrDataControlDeviceV1>,
+
     offer_mime_types: HashMap<ObjectId, Vec<String>>,
+    got_selection: bool,
+    current_selection: Option<ZwlrDataControlOfferV1>,
 }
 
 impl Dispatch<WlRegistry, ()> for AppState {
@@ -87,6 +97,8 @@ impl wayland_client::Dispatch<ZwlrDataControlDeviceV1, (), AppState> for AppStat
                         println!("📋 {}", mime_type);
                     }
                 }
+                state.current_selection = Some(offer);
+                state.got_selection = true;
             }
             DataControlDeviceEvent::PrimarySelection { id } => {
                 if let Some(offer) = id {
@@ -136,48 +148,110 @@ impl Dispatch<ZwlrDataControlOfferV1, ()> for AppState {
     }
 }
 
-pub fn execute() -> Result<(), Box<dyn std::error::Error>> {
-    let conn = Connection::connect_to_env()?;
-    let display = conn.display();
+pub struct LinuxClipboard {
+    conn: Connection,
+    state: AppState,
+    event_queue: wayland_client::EventQueue<AppState>,
+}
 
-    // Create an event queue for our event processing
-    let mut event_queue = conn.new_event_queue();
-    let qh = event_queue.handle();
+impl std::panic::RefUnwindSafe for LinuxClipboard {}
 
-    // Create a wl_registry object by sending the wl_display.get_registry request
-    let _registry = display.get_registry(&qh, ());
+impl LinuxClipboard {
+    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        let conn = Connection::connect_to_env()?;
+        let display = conn.display();
 
-    let mut state = AppState {
-        data_control_manager: None,
-        seat: None,
-        data_control_device: None,
-        offer_mime_types: HashMap::new(),
-    };
-    event_queue.blocking_dispatch(&mut state)?;
+        // Create an event queue for our event processing
+        let mut event_queue = conn.new_event_queue();
+        let qh = event_queue.handle();
 
-    if state.data_control_manager.is_none() || state.seat.is_none() {
-        return Err("Missing zwlr_data_control_manager_v1 or wl_seat".into());
+        // Create a wl_registry object by sending the wl_display.get_registry request
+        let _registry = display.get_registry(&qh, ());
+
+        let mut state = AppState {
+            data_control_manager: None,
+            seat: None,
+            data_control_device: None,
+            offer_mime_types: HashMap::new(),
+            got_selection: false,
+            current_selection: None,
+        };
+        event_queue.blocking_dispatch(&mut state)?;
+
+        if state.data_control_manager.is_none() || state.seat.is_none() {
+            return Err("Missing zwlr_data_control_manager_v1 or wl_seat".into());
+        }
+
+        let data_control_manager = state.data_control_manager.as_ref().unwrap();
+        let seat = state.seat.as_ref().unwrap();
+
+        let data_control_device = data_control_manager.get_data_device(seat, &qh, ());
+        state.data_control_device = Some(data_control_device);
+
+        Ok(LinuxClipboard {
+            conn,
+            state,
+            event_queue,
+        })
+    }
+}
+
+impl Clipboard for LinuxClipboard {
+    fn get_by_type(&mut self, content_type: &str) -> Result<String, Box<dyn std::error::Error>> {
+        use nix::fcntl::OFlag;
+        use nix::unistd::pipe2;
+        use std::os::fd::BorrowedFd;
+
+        let offer = match &self.state.current_selection {
+            Some(offer) => offer,
+            None => return Err("No selection available".into()),
+        };
+
+        let (read_fd, write_fd) = pipe2(OFlag::O_CLOEXEC)?;
+
+        let content_type = content_type.to_string();
+        let write_fd = unsafe { BorrowedFd::borrow_raw(write_fd.as_raw_fd()) };
+        offer.receive(content_type, write_fd);
+
+        nix::unistd::close(write_fd.as_raw_fd())?;
+
+        self.event_queue.blocking_dispatch(&mut self.state)?;
+
+        use std::os::fd::FromRawFd;
+        use std::io::Read;
+
+        let mut file = unsafe { std::fs::File::from_raw_fd(read_fd) };
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+
+        let result = String::from_utf8(buffer).map_err(|e| format!("Invalid UTF-8 in clipboard: {}", e).into());
+        result
     }
 
-    let data_control_manager = state.data_control_manager.as_ref().unwrap();
-    let seat = state.seat.as_ref().unwrap();
+    fn get_string(&mut self) -> Option<String> {
+        self.get_by_type("text/plain").ok()
+    }
 
-    let data_control_device = data_control_manager.get_data_device(seat, &qh, ());
-    state.data_control_device = Some(data_control_device);
-
-    println!("Listening for clipboard events forever...");
-
-    loop {
-        match event_queue.blocking_dispatch(&mut state) {
-            Ok(_) => {
-                // Continue processing events
+    fn list_types(&self) -> Vec<String> {
+        if let Some(ref current_selection) = self.state.current_selection {
+            let selection_id = current_selection.id();
+            if let Some(mime_types) = self.state.offer_mime_types.get(&selection_id) {
+                return mime_types.clone();
             }
-            Err(e) => {
-                eprintln!("Error processing events: {}", e);
-                break;
+        }
+        Vec::new()
+    }
+
+    fn wait(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.state.got_selection = false;
+
+        loop {
+            self.event_queue.blocking_dispatch(&mut self.state)
+                .map_err(|e| format!("Error waiting for clipboard events: {}", e))?;
+
+            if self.state.got_selection {
+                return Ok(());
             }
         }
     }
-
-    Ok(())
 }
