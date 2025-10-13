@@ -42,6 +42,7 @@ impl Clipboard for NSPasteboard {
                 .into_owned())
         }
     }
+ 
 
     fn get_string(&mut self) -> Option<String> {
         self.get_by_type("public.utf8-plain-text").ok()
@@ -101,6 +102,27 @@ impl Clipboard for NSPasteboard {
             } else {
                 Err(format!("Failed to set clipboard content for type: {}", content_type).into())
             }
+        }
+    }
+
+    fn set_multiple_types(&self, types: &std::collections::HashMap<String, String>) -> Result<(), Box<dyn std::error::Error>> {
+        unsafe {
+            // Clear the pasteboard first
+            let _: i32 = msg_send![self.pasteboard, clearContents];
+
+            // Set each type without clearing in between
+            for (content_type, content) in types {
+                let string_type: id = NSString::alloc(nil).init_str(content_type);
+                let string_content: id = NSString::alloc(nil).init_str(content);
+
+                let success: bool = msg_send![self.pasteboard, setString:string_content forType:string_type];
+
+                if !success {
+                    return Err(format!("Failed to set clipboard content for type: {}", content_type).into());
+                }
+            }
+
+            Ok(())
         }
     }
 }
