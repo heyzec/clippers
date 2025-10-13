@@ -28,7 +28,37 @@ pub fn execute() -> Result<(), Box<dyn std::error::Error>> {
             println!("Changed: {}", new_content);
             let types = clipboard.list_types();
             println!("Types: {:?}", types);
-            storage.add_entry(new_content);
+
+            for content_type in &types {
+                match clipboard.get_by_type(content_type) {
+                    Ok(content) => {
+                        let mut hasher = DefaultHasher::new();
+                        content.hash(&mut hasher);
+                        let hash = hasher.finish();
+                        println!("Type '{}' ({:x}): {}", content_type, hash, content);
+                    }
+                    Err(e) => {
+                        println!("Type '{}': Failed to get content - {}", content_type, e);
+                    }
+                }
+            }
+            print!("\n");
+
+            // Construct ClipboardEntry with all available MIME types
+            let mut type_content_map = HashMap::new();
+
+            for content_type in &types {
+                if let Ok(content) = clipboard.get_by_type(content_type) {
+                    type_content_map.insert(content_type.clone(), content);
+                }
+            }
+
+            if !type_content_map.is_empty() {
+                storage.add_entry(type_content_map);
+                println!("Stored clipboard entry with {} types", types.len());
+            } else {
+                println!("No valid content to store.");
+            }
         }
     }
 }
