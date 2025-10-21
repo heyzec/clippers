@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipboardEntry {
     pub id: u64,
-    pub content: String,
     pub timestamp: std::time::SystemTime,
+    pub types: HashMap<String, String>, // mime_type -> content
 }
 
 #[derive(Serialize, Deserialize)]
@@ -42,13 +42,9 @@ impl Storage {
         Ok(storage)
     }
 
-    pub fn add_entry(&mut self, content: String) {
+    pub fn add_entry(&mut self, types: HashMap<String, String>) {
         self.highest_id += 1;
-        let entry = ClipboardEntry {
-            id: self.highest_id,
-            content,
-            timestamp: std::time::SystemTime::now(),
-        };
+        let entry = ClipboardEntry::new(self.highest_id, types);
 
         self.entries.push_front(entry);
 
@@ -83,5 +79,36 @@ impl Storage {
         serde_json::to_writer_pretty(file, &self)?;
 
         Ok(())
+    }
+}
+
+impl ClipboardEntry {
+    pub fn new(id: u64, types: HashMap<String, String>) -> Self {
+        Self {
+            id,
+            timestamp: std::time::SystemTime::now(),
+            types,
+        }
+    }
+
+    pub fn get_content_by_type(&self, mime_type: &str) -> Option<&String> {
+        self.types.get(mime_type)
+    }
+
+    pub fn get_text_content(&self) -> Option<String> {
+        #[cfg(target_os = "linux")]
+        {
+            self.get_content_by_type("text/plain").cloned()
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            self.get_content_by_type("public.utf8-plain-text").cloned()
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn get_available_types(&self) -> Vec<&String> {
+        self.types.keys().collect()
     }
 }
