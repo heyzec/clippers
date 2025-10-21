@@ -13,6 +13,7 @@ use wayland_protocols_wlr::data_control::v1::client::{
     zwlr_data_control_device_v1::{Event as DataControlDeviceEvent, ZwlrDataControlDeviceV1},
     zwlr_data_control_manager_v1::ZwlrDataControlManagerV1,
     zwlr_data_control_offer_v1::ZwlrDataControlOfferV1,
+    zwlr_data_control_source_v1::ZwlrDataControlSourceV1,
 };
 
 struct AppState {
@@ -27,12 +28,19 @@ struct AppState {
 
     got_selection: bool,
     current_selection: Option<ZwlrDataControlOfferV1>,
+
+    // For setting clipboard, needed because we need to pass data to callback
+    to_set: String,
+    type_to_set: String,
 }
+
+delegate_noop!(AppState: ignore WlSeat);
+delegate_noop!(AppState: ignore ZwlrDataControlManagerV1);
 
 impl Dispatch<WlRegistry, ()> for AppState {
     fn event(
-        _state: &mut Self,
-        _registry: &WlRegistry,
+        state: &mut Self,
+        registry: &WlRegistry,
         event: <WlRegistry as wayland_client::Proxy>::Event,
         _data: &(),
         _conn: &Connection,
@@ -49,18 +57,17 @@ impl Dispatch<WlRegistry, ()> for AppState {
                 match interface.as_str() {
                     "zwlr_data_control_manager_v1" => {
                         let version_to_bind = if version > 2 { 2 } else { version }; // cap at version 2
-                        let data_control_manager = _registry
-                            .bind::<ZwlrDataControlManagerV1, _, _>(
-                                name,
-                                version_to_bind,
-                                qhandle,
-                                (),
-                            );
-                        _state.data_control_manager = Some(data_control_manager);
+                        let data_control_manager = registry.bind::<ZwlrDataControlManagerV1, _, _>(
+                            name,
+                            version_to_bind,
+                            qhandle,
+                            (),
+                        );
+                        state.data_control_manager = Some(data_control_manager);
                     }
                     "wl_seat" => {
-                        let seat = _registry.bind::<WlSeat, _, _>(name, version, qhandle, ());
-                        _state.seat = Some(seat);
+                        let seat = registry.bind::<WlSeat, _, _>(name, version, qhandle, ());
+                        state.seat = Some(seat);
                     }
                     _ => {}
                 }
@@ -71,10 +78,7 @@ impl Dispatch<WlRegistry, ()> for AppState {
     }
 }
 
-delegate_noop!(AppState: ignore WlSeat);
-delegate_noop!(AppState: ignore ZwlrDataControlManagerV1);
-
-impl wayland_client::Dispatch<ZwlrDataControlDeviceV1, (), AppState> for AppState {
+impl Dispatch<ZwlrDataControlDeviceV1, (), AppState> for AppState {
     fn event(
         state: &mut AppState,
         _proxy: &ZwlrDataControlDeviceV1,
@@ -125,7 +129,7 @@ impl wayland_client::Dispatch<ZwlrDataControlDeviceV1, (), AppState> for AppStat
 impl Dispatch<ZwlrDataControlOfferV1, ()> for AppState {
     fn event(
         state: &mut Self,
-        _proxy: &ZwlrDataControlOfferV1,
+        proxy: &ZwlrDataControlOfferV1,
         event: <ZwlrDataControlOfferV1 as wayland_client::Proxy>::Event,
         _data: &(),
         _conn: &Connection,
@@ -134,10 +138,37 @@ impl Dispatch<ZwlrDataControlOfferV1, ()> for AppState {
         use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_offer_v1::Event;
         match event {
             Event::Offer { mime_type } => {
-                let offer_id = _proxy.id();
+                let offer_id = proxy.id();
                 if let Some(mime_types) = state.offer_mime_types.get_mut(&offer_id) {
                     mime_types.push(mime_type.clone());
                 }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwlrDataControlSourceV1, (), AppState> for AppState {
+    fn event(
+        state: &mut Self,
+        _proxy: &ZwlrDataControlSourceV1,
+        event: <ZwlrDataControlSourceV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &wayland_client::QueueHandle<Self>,
+    ) {
+        use std::io::Write;
+        use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_source_v1::Event;
+
+        match event {
+            Event::Send { mime_type, fd } => {
+                if mime_type != state.type_to_set {
+                    return;
+                }
+                let mut file: std::fs::File = fd.into();
+                let content = &state.to_set;
+                file.write_all(&content.as_bytes())
+                    .expect("Failed to write to clipboard fd");
             }
             _ => {}
         }
@@ -171,6 +202,8 @@ impl LinuxClipboard {
             offer_mime_types: HashMap::new(),
             got_selection: false,
             current_selection: None,
+            to_set: String::from(""),
+            type_to_set: String::from(""),
         };
         event_queue.blocking_dispatch(&mut state)?;
 
@@ -255,5 +288,37 @@ impl Clipboard for LinuxClipboard {
                 return Ok(());
             }
         }
+    }
+
+    fn set_by_type(
+        &mut self,
+        content_type: &str,
+        content: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let manager = self
+            .state
+            .data_control_manager
+            .as_ref()
+            .ok_or("No data control manager available")?;
+        let device = self
+            .state
+            .data_control_device
+            .as_ref()
+            .ok_or("No data control device available")?;
+        let source = manager.create_data_source(&self.event_queue.handle(), ());
+
+        self.state.to_set = content.to_string();
+        self.state.type_to_set = content_type.to_string();
+
+        source.offer(content_type.to_string());
+        device.set_selection(Some(&source));
+
+        self.conn.roundtrip()?;
+        // Dispatch a couple of times to ensure the clipboard is set
+        for _ in 0..2 {
+            let _ = self.event_queue.blocking_dispatch(&mut self.state);
+        }
+
+        Ok(())
     }
 }

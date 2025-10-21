@@ -8,6 +8,12 @@ pub trait Clipboard: std::panic::RefUnwindSafe {
 
     /// Wait for the next clipboard change
     fn wait(&mut self) -> Result<(), Box<dyn std::error::Error>>;
+
+    fn set_by_type(
+        &mut self,
+        content_type: &str,
+        content: &str,
+    ) -> Result<(), Box<dyn std::error::Error>>;
 }
 
 pub fn create_clipboard() -> Result<Box<dyn Clipboard>, Box<dyn std::error::Error>> {

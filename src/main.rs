@@ -15,6 +15,7 @@ struct Cli {
 enum Commands {
     Watch,
     List,
+    Pick,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -26,6 +27,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::List => {
             commands::list::execute()?;
+        }
+        Commands::Pick => {
+            commands::pick::execute()?;
         }
     }
 
