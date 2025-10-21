@@ -193,7 +193,7 @@ impl LinuxClipboard {
 }
 
 impl Clipboard for LinuxClipboard {
-    fn get_by_type(&mut self, content_type: &str) -> Result<String, Box<dyn std::error::Error>> {
+    fn get_by_type(&mut self, content_type: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         use nix::fcntl::OFlag;
         use nix::unistd::pipe2;
         use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd};
@@ -218,12 +218,13 @@ impl Clipboard for LinuxClipboard {
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?; // Read fd until EOF
 
-        let result = String::from_utf8(buffer).map_err(|e| format!("Invalid UTF-8 in clipboard: {}", e).into());
-        result
+        Ok(buffer)
     }
 
     fn get_string(&mut self) -> Option<String> {
-        self.get_by_type("text/plain").ok()
+        self.get_by_type("text/plain")
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
     }
 
     fn list_types(&self) -> Vec<String> {
@@ -253,7 +254,15 @@ impl Clipboard for LinuxClipboard {
     fn set_by_type(
         &self,
         _content_type: &str,
-        _content: &str,
+        _content: &[u8],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // TODO: Implement clipboard setting for Linux using zwlr_data_control_source_v1
+        Err("Setting clipboard on Linux is not yet implemented".into())
+    }
+
+    fn set_multiple_types(
+        &self,
+        _types: &HashMap<String, Vec<u8>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // TODO: Implement clipboard setting for Linux using zwlr_data_control_source_v1
         Err("Setting clipboard on Linux is not yet implemented".into())
