@@ -9,15 +9,13 @@ pub fn execute() -> Result<(), Box<dyn std::error::Error>> {
     // Extract ID, ignoring parts after '|'
     let id_str = input.trim().split('|').next().unwrap_or("").trim();
 
-    let id: usize = id_str
+    let id: u64 = id_str
         .parse()
         .map_err(|_| format!("Invalid ID: '{}'", id_str))?;
 
     let storage = Storage::from_file(100)?;
-    let entries = storage.get_entries();
-
-    let entry = entries
-        .get(id)
+    let entry = storage
+        .get_entry_by_id(id)
         .ok_or_else(|| format!("Entry with ID {} not found", id))?;
 
     let mut clipboard = create_clipboard()?;
