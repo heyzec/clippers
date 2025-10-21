@@ -8,7 +8,7 @@ pub fn execute() -> Result<(), Box<dyn std::error::Error>> {
         let display_content = if let Some(text_content) = entry.get_text_content() {
             text_content.clone()
         } else {
-            "[no text representation available]".to_string()
+            entry.get_binary_info()
         };
 
         // TODO: Configure separator from command line argument
