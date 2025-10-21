@@ -21,7 +21,7 @@ pub fn execute() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or_else(|| format!("Entry with ID {} not found", id))?;
 
     let clipboard = create_clipboard()?;
-    clipboard.set_by_type("public.utf8-plain-text", &entry.content)?;
+    clipboard.set_multiple_types(&entry.types)?;
 
     Ok(())
 }
