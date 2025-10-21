@@ -1,2 +1,2 @@
-pub mod pasteboard;
+pub mod clipboard;
 pub mod storage;
