@@ -2,6 +2,7 @@
 pub trait Clipboard: std::panic::RefUnwindSafe {
     fn get_by_type(&mut self, content_type: &str) -> Result<String, Box<dyn std::error::Error>>;
 
+    #[allow(dead_code)]
     fn get_string(&mut self) -> Option<String>;
 
     fn list_types(&self) -> Vec<String>;
@@ -9,10 +10,9 @@ pub trait Clipboard: std::panic::RefUnwindSafe {
     /// Wait for the next clipboard change
     fn wait(&mut self) -> Result<(), Box<dyn std::error::Error>>;
 
-    fn set_by_type(
+    fn set_types(
         &mut self,
-        content_type: &str,
-        content: &str,
+        types: &std::collections::HashMap<String, String>,
     ) -> Result<(), Box<dyn std::error::Error>>;
 }
 

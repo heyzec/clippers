@@ -30,8 +30,7 @@ struct AppState {
     current_selection: Option<ZwlrDataControlOfferV1>,
 
     // For setting clipboard, needed because we need to pass data to callback
-    to_set: String,
-    type_to_set: String,
+    types_to_set: HashMap<String, String>,
 }
 
 delegate_noop!(AppState: ignore WlSeat);
@@ -162,13 +161,14 @@ impl Dispatch<ZwlrDataControlSourceV1, (), AppState> for AppState {
 
         match event {
             Event::Send { mime_type, fd } => {
-                if mime_type != state.type_to_set {
-                    return;
-                }
                 let mut file: std::fs::File = fd.into();
-                let content = &state.to_set;
+                let content = match state.types_to_set.get(&mime_type) {
+                    Some(c) => c.clone(),
+                    None => return, // seems like compositor (?) may request a type twice
+                };
                 file.write_all(&content.as_bytes())
                     .expect("Failed to write to clipboard fd");
+                state.types_to_set.remove(&mime_type);
             }
             _ => {}
         }
@@ -202,8 +202,7 @@ impl LinuxClipboard {
             offer_mime_types: HashMap::new(),
             got_selection: false,
             current_selection: None,
-            to_set: String::from(""),
-            type_to_set: String::from(""),
+            types_to_set: HashMap::new(),
         };
         event_queue.blocking_dispatch(&mut state)?;
 
@@ -290,10 +289,9 @@ impl Clipboard for LinuxClipboard {
         }
     }
 
-    fn set_by_type(
+    fn set_types(
         &mut self,
-        content_type: &str,
-        content: &str,
+        types: &HashMap<String, String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let manager = self
             .state
@@ -307,16 +305,19 @@ impl Clipboard for LinuxClipboard {
             .ok_or("No data control device available")?;
         let source = manager.create_data_source(&self.event_queue.handle(), ());
 
-        self.state.to_set = content.to_string();
-        self.state.type_to_set = content_type.to_string();
+        self.state.types_to_set = types.clone();
 
-        source.offer(content_type.to_string());
+        for (content_type, _content) in types.iter() {
+            source.offer(content_type.to_string());
+        }
         device.set_selection(Some(&source));
 
         self.conn.roundtrip()?;
-        // Dispatch a couple of times to ensure the clipboard is set
-        for _ in 0..2 {
+        loop {
             let _ = self.event_queue.blocking_dispatch(&mut self.state);
+            if self.state.types_to_set.is_empty() {
+                break;
+            }
         }
 
         Ok(())
