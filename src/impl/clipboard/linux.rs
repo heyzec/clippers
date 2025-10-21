@@ -30,7 +30,7 @@ struct AppState {
     current_selection: Option<ZwlrDataControlOfferV1>,
 
     // For setting clipboard, needed because we need to pass data to callback
-    types_to_set: HashMap<String, String>,
+    types_to_set: HashMap<String, Vec<u8>>,
 }
 
 delegate_noop!(AppState: ignore WlSeat);
@@ -166,7 +166,7 @@ impl Dispatch<ZwlrDataControlSourceV1, (), AppState> for AppState {
                     Some(c) => c.clone(),
                     None => return, // seems like compositor (?) may request a type twice
                 };
-                file.write_all(&content.as_bytes())
+                file.write_all(&content)
                     .expect("Failed to write to clipboard fd");
                 state.types_to_set.remove(&mime_type);
             }
@@ -225,7 +225,7 @@ impl LinuxClipboard {
 }
 
 impl Clipboard for LinuxClipboard {
-    fn get_by_type(&mut self, content_type: &str) -> Result<String, Box<dyn std::error::Error>> {
+    fn get_by_type(&mut self, content_type: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         use nix::fcntl::OFlag;
         use nix::unistd::pipe2;
         use std::io::Read;
@@ -250,13 +250,13 @@ impl Clipboard for LinuxClipboard {
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?; // Read fd until EOF
 
-        let result = String::from_utf8(buffer)
-            .map_err(|e| format!("Invalid UTF-8 in clipboard: {}", e).into());
-        result
+        Ok(buffer)
     }
 
     fn get_string(&mut self) -> Option<String> {
-        self.get_by_type("text/plain").ok()
+        self.get_by_type("text/plain")
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
     }
 
     fn list_types(&self) -> Vec<String> {
@@ -291,7 +291,7 @@ impl Clipboard for LinuxClipboard {
 
     fn set_types(
         &mut self,
-        types: &HashMap<String, String>,
+        types: &HashMap<String, Vec<u8>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let manager = self
             .state
