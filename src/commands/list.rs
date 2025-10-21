@@ -4,9 +4,9 @@ pub fn execute() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Storage::from_file(100)?;
     let entries = storage.get_entries();
 
-    for entry in entries.iter() {
+    for (id, entry) in entries.iter().enumerate() {
         // TODO: Configure separator from command line argument
-        print!("{}:::", entry.content);
+        print!("{}|{}:::", id, entry.content);
     }
 
     Ok(())

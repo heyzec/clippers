@@ -249,4 +249,13 @@ impl Clipboard for LinuxClipboard {
             }
         }
     }
+
+    fn set_by_type(
+        &self,
+        _content_type: &str,
+        _content: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // TODO: Implement clipboard setting for Linux using zwlr_data_control_source_v1
+        Err("Setting clipboard on Linux is not yet implemented".into())
+    }
 }
