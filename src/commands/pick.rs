@@ -19,15 +19,7 @@ pub fn execute() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or_else(|| format!("Entry with ID {} not found", id))?;
 
     let mut clipboard = create_clipboard()?;
-
-    #[cfg(target_os = "linux")]
-    {
-        clipboard.set_by_type("text/plain", &entry.content)?;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        clipboard.set_by_type("public.utf8-plain-text", &entry.content)?;
-    }
+    clipboard.set_types(&entry.types)?;
 
     Ok(())
 }
