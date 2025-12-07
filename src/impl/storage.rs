@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
+use std::io::BufReader;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipboardEntry {
@@ -67,7 +68,8 @@ impl Storage {
         let file_path = format!("{}/db.json", home_dir);
 
         let file = File::open(file_path)?;
-        let mut storage: Storage = serde_json::from_reader(file)?;
+        let reader = BufReader::new(file); // avoids repeated syscalls
+        let mut storage: Storage = serde_json::from_reader(reader)?;
 
         storage.max_entries = max_entries;
 
