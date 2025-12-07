@@ -1,49 +1,25 @@
-use serde::{Deserialize, Serialize};
+use crate::r#impl::path;
+use base64::{engine::general_purpose, Engine as _};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
-use std::fs::File;
-use std::io::BufReader;
+use std::fs::{self, File};
+use std::io::{BufReader, Write};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+const EXTERNALIZE_THRESHOLD: usize = 1024; // 1KB
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "lowercase")]
+pub enum ContentRef {
+    Inline(String),       // plain text (valid UTF-8)
+    InlineBase64(String), // base64-encoded content (binary or non-UTF-8)
+    External(String),     // content hash for lookup
+}
+
 pub struct ClipboardEntry {
     pub id: u64,
     pub timestamp: std::time::SystemTime,
-    #[serde(with = "serde_bytes_map")]
     pub types: HashMap<String, Vec<u8>>, // mime_type -> content (bytes)
-}
-
-// Custom serialization for HashMap<String, Vec<u8>> to use base64
-mod serde_bytes_map {
-    use base64::{engine::general_purpose, Engine as _};
-    use serde::{Deserialize, Deserializer, Serializer};
-    use std::collections::HashMap;
-
-    pub fn serialize<S>(map: &HashMap<String, Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        use serde::ser::SerializeMap;
-        let mut map_ser = serializer.serialize_map(Some(map.len()))?;
-        for (k, v) in map {
-            let encoded = general_purpose::STANDARD.encode(v);
-            map_ser.serialize_entry(k, &encoded)?;
-        }
-        map_ser.end()
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<String, Vec<u8>>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let map: HashMap<String, String> = HashMap::deserialize(deserializer)?;
-        map.into_iter()
-            .map(|(k, v)| {
-                general_purpose::STANDARD
-                    .decode(&v)
-                    .map(|bytes| (k, bytes))
-                    .map_err(serde::de::Error::custom)
-            })
-            .collect()
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -55,6 +31,30 @@ pub struct Storage {
 }
 
 impl Storage {
+    pub fn compute_hash(content: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        hex::encode(hasher.finalize())
+    }
+
+    pub fn write_blob(hash: &str, content: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+        let blobs_dir = path::get_blobs_dir()?;
+        let blob_path = blobs_dir.join(hash);
+
+        // Only write if it doesn't exist (content-addressable)
+        if !blob_path.exists() {
+            let mut file = File::create(blob_path)?;
+            file.write_all(content)?;
+        }
+        Ok(())
+    }
+
+    pub fn read_blob(hash: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let blobs_dir = path::get_blobs_dir()?;
+        let blob_path = blobs_dir.join(hash);
+        Ok(fs::read(blob_path)?)
+    }
+
     pub fn new(max_entries: usize) -> Self {
         Self {
             entries: VecDeque::new(),
@@ -64,18 +64,17 @@ impl Storage {
     }
 
     pub fn from_file(max_entries: usize) -> Result<Self, Box<dyn std::error::Error>> {
-        let home_dir = std::env::var("HOME")?;
-        let file_path = format!("{}/db.json", home_dir);
+        let file_path = path::get_history_file_path()?;
 
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file); // avoids repeated syscalls
-        let mut storage: Storage = serde_json::from_reader(reader)?;
-
-        storage.max_entries = max_entries;
-
-        // while storage.entries.len() > storage.max_entries {
-        //     storage.entries.pop_back();
-        // }
+        let storage = if file_path.exists() {
+            let file = File::open(&file_path)?;
+            let reader = BufReader::new(file);
+            let mut storage: Storage = serde_json::from_reader(reader)?;
+            storage.max_entries = max_entries;
+            storage
+        } else {
+            Storage::new(max_entries)
+        };
 
         Ok(storage)
     }
@@ -110,13 +109,147 @@ impl Storage {
     }
 
     pub fn to_file(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let home_dir = std::env::var("HOME")?;
-        let file_path = format!("{}/db.json", home_dir);
-        let file = File::create(file_path)?;
+        let file_path = path::get_history_file_path()?;
 
+        // Ensure directory exists
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let file = File::create(&file_path)?;
         serde_json::to_writer_pretty(file, &self)?;
 
         Ok(())
+    }
+}
+
+impl Serialize for ClipboardEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("ClipboardEntry", 3)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("timestamp", &self.timestamp)?;
+
+        // Build ContentRef map for types
+        let mut types_refs = HashMap::new();
+        for (k, v) in &self.types {
+            let content_ref = if v.len() > EXTERNALIZE_THRESHOLD {
+                // Externalize: compute hash and write blob
+                let hash = Storage::compute_hash(v);
+                if let Err(e) = Storage::write_blob(&hash, v) {
+                    return Err(serde::ser::Error::custom(format!(
+                        "Failed to write blob: {}",
+                        e
+                    )));
+                }
+                ContentRef::External(hash)
+            } else {
+                // Check if content is valid UTF-8 text
+                match std::str::from_utf8(v) {
+                    Ok(text) => {
+                        // Valid UTF-8: store as plain text
+                        ContentRef::Inline(text.to_string())
+                    }
+                    Err(_) => {
+                        // Invalid UTF-8 or binary: use base64
+                        let encoded = general_purpose::STANDARD.encode(v);
+                        ContentRef::InlineBase64(encoded)
+                    }
+                }
+            };
+            types_refs.insert(k.clone(), content_ref);
+        }
+
+        state.serialize_field("types", &types_refs)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ClipboardEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::{self, MapAccess, Visitor};
+        use std::fmt;
+
+        struct ClipboardEntryVisitor;
+
+        impl<'de> Visitor<'de> for ClipboardEntryVisitor {
+            type Value = ClipboardEntry;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("struct ClipboardEntry")
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<ClipboardEntry, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                let mut id = None;
+                let mut timestamp = None;
+                let mut types: Option<HashMap<String, ContentRef>> = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "id" => {
+                            if id.is_some() {
+                                return Err(de::Error::duplicate_field("id"));
+                            }
+                            id = Some(map.next_value()?);
+                        }
+                        "timestamp" => {
+                            if timestamp.is_some() {
+                                return Err(de::Error::duplicate_field("timestamp"));
+                            }
+                            timestamp = Some(map.next_value()?);
+                        }
+                        "types" => {
+                            if types.is_some() {
+                                return Err(de::Error::duplicate_field("types"));
+                            }
+                            types = Some(map.next_value()?);
+                        }
+                        _ => {
+                            let _ = map.next_value::<de::IgnoredAny>()?;
+                        }
+                    }
+                }
+
+                let id = id.ok_or_else(|| de::Error::missing_field("id"))?;
+                let timestamp = timestamp.ok_or_else(|| de::Error::missing_field("timestamp"))?;
+                let types_refs = types.ok_or_else(|| de::Error::missing_field("types"))?;
+
+                // Convert ContentRef map to Vec<u8> map
+                let types: HashMap<String, Vec<u8>> = types_refs
+                    .into_iter()
+                    .map(|(k, content_ref)| match content_ref {
+                        ContentRef::Inline(text) => Ok((k, text.into_bytes())),
+                        ContentRef::InlineBase64(encoded) => general_purpose::STANDARD
+                            .decode(&encoded)
+                            .map(|bytes| (k, bytes))
+                            .map_err(de::Error::custom),
+                        ContentRef::External(hash) => Storage::read_blob(&hash)
+                            .map(|bytes| (k, bytes))
+                            .map_err(|e| {
+                                de::Error::custom(format!("Failed to read blob {}: {}", hash, e))
+                            }),
+                    })
+                    .collect::<Result<_, _>>()?;
+
+                Ok(ClipboardEntry {
+                    id,
+                    timestamp,
+                    types,
+                })
+            }
+        }
+
+        const FIELDS: &[&str] = &["id", "timestamp", "types"];
+        deserializer.deserialize_struct("ClipboardEntry", FIELDS, ClipboardEntryVisitor)
     }
 }
 
